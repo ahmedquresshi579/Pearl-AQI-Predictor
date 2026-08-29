@@ -17,7 +17,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv hopsworks
+          pip install requests python-dotenv "hopsworks[python]"
 
       - name: Fetch current features and write to feature store
         working-directory: feature_pipeline
