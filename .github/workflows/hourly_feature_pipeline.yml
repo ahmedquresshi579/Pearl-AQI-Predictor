@@ -1,0 +1,27 @@
+name: Hourly Feature Pipeline
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # every hour, on the hour (UTC)
+  workflow_dispatch:  # lets you trigger it manually from the Actions tab too
+
+jobs:
+  fetch-features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests python-dotenv hopsworks
+
+      - name: Fetch current features and write to feature store
+        working-directory: feature_pipeline
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python fetch_features.py
