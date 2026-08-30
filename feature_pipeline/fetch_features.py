@@ -87,12 +87,26 @@ def compute_features(raw_record: dict) -> dict:
     }
 
 
+NUMERIC_FLOAT_COLUMNS = [
+    "aqi", "pm2_5", "pm10", "co", "no", "no2", "o3", "so2", "nh3",
+    "hour_sin", "hour_cos", "month_sin", "month_cos",
+]
+
+
 def write_to_hopsworks(features: dict, hopsworks_api_key: str):
     project = hopsworks.login(api_key_value=hopsworks_api_key, project="lahore_aqi_ahmedanjum")
     fs = project.get_feature_store()
     fg = fs.get_feature_group(name=FEATURE_GROUP_NAME, version=FEATURE_GROUP_VERSION)
 
     df = pd.DataFrame([features])
+    # Force float dtype on numeric columns — a value that happens to be a
+    # whole number (e.g. OpenWeather returning "no": 0) gets inferred as
+    # int by pandas for a single-row frame, which the feature group schema
+    # (all floats, from the historical backfill) then rejects.
+    for col in NUMERIC_FLOAT_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
+
     fg.insert(df)
     print(f"Inserted 1 row into '{FEATURE_GROUP_NAME}' (timestamp={features['timestamp']})")
 
