@@ -1,4 +1,13 @@
+"""
+Fetches current air pollution + weather data for Lahore from OpenWeather,
+converts PM2.5 to US EPA AQI, and computes model-ready features.
 
+Usage:
+    python fetch_features.py
+
+Requires:
+    OPENWEATHER_API_KEY set as an environment variable (see .env.example)
+"""
 import os
 import math
 from datetime import datetime, timezone
