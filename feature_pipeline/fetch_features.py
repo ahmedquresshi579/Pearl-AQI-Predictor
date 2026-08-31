@@ -1,22 +1,21 @@
 """
-Fetches current air pollution + weather data for Lahore from OpenWeather,
-converts PM2.5 to US EPA AQI, computes model-ready features, and writes
-the resulting row into the Hopsworks feature store.
+Fetches the last 48 hours of air pollution data for Lahore from
+OpenWeather (self-healing: covers any gap up to 48h from a missed or
+delayed scheduled run), converts PM2.5 to AQI, computes features, and
+writes all rows into the Hopsworks feature store in one batch.
 
-BUG FIX: earlier versions of this script computed features and only
-printed them — they never actually wrote to Hopsworks, so the hourly
-GitHub Action was succeeding while doing nothing useful. This version
-inserts the row for real.
+Because Hopsworks upserts by primary key (timestamp), re-sending hours
+that already exist is safe — they just get skipped/updated, never
+duplicated. This makes the hourly job self-healing against GitHub
+Actions' scheduling delays, without needing a separate backfill run.
 
 Usage:
     python fetch_features.py
-
-Requires:
-    OPENWEATHER_API_KEY and HOPSWORKS_API_KEY set as environment variables
 """
 import os
 import math
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, timedelta
 
 import requests
 import pandas as pd
@@ -29,24 +28,26 @@ load_dotenv()
 
 LAT = 31.5497
 LON = 74.3436
-CURRENT_URL = "https://api.openweathermap.org/data/2.5/air_pollution"
 HISTORY_URL = "https://api.openweathermap.org/data/2.5/air_pollution/history"
 
 FEATURE_GROUP_NAME = "lahore_aqi_features"
 FEATURE_GROUP_VERSION = 1
+LOOKBACK_HOURS = 48
+
+NUMERIC_FLOAT_COLUMNS = [
+    "aqi", "pm2_5", "pm10", "co", "no", "no2", "o3", "so2", "nh3",
+    "hour_sin", "hour_cos", "month_sin", "month_cos",
+]
 
 
-def fetch_current_raw(lat: float, lon: float, api_key: str) -> dict:
-    resp = requests.get(CURRENT_URL, params={"lat": lat, "lon": lon, "appid": api_key}, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("list"):
-        raise ValueError(f"OpenWeather returned no data for lat={lat}, lon={lon}: {data}")
-    return data["list"][0]
-
-
-def fetch_historical_raw(lat: float, lon: float, api_key: str, start: int, end: int) -> list:
-    resp = requests.get(HISTORY_URL, params={"lat": lat, "lon": lon, "start": start, "end": end, "appid": api_key}, timeout=15)
+def fetch_recent_raw(lat: float, lon: float, api_key: str, hours_back: int) -> list:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=hours_back)
+    resp = requests.get(
+        HISTORY_URL,
+        params={"lat": lat, "lon": lon, "start": int(start.timestamp()), "end": int(end.timestamp()), "appid": api_key},
+        timeout=20,
+    )
     resp.raise_for_status()
     data = resp.json()
     return data.get("list", [])
@@ -58,7 +59,7 @@ def compute_features(raw_record: dict) -> dict:
 
     pm25 = components.get("pm2_5")
     if pm25 is None:
-        raise ValueError(f"Record missing pm2_5, cannot compute AQI: {raw_record}")
+        raise ValueError(f"Record missing pm2_5: {raw_record}")
 
     aqi = pm25_to_aqi(pm25)
     hour = dt_utc.hour
@@ -87,28 +88,19 @@ def compute_features(raw_record: dict) -> dict:
     }
 
 
-NUMERIC_FLOAT_COLUMNS = [
-    "aqi", "pm2_5", "pm10", "co", "no", "no2", "o3", "so2", "nh3",
-    "hour_sin", "hour_cos", "month_sin", "month_cos",
-]
-
-
-def write_to_hopsworks(features: dict, hopsworks_api_key: str):
+def write_batch_to_hopsworks(rows: list, hopsworks_api_key: str):
     project = hopsworks.login(api_key_value=hopsworks_api_key, project="lahore_aqi_ahmedanjum")
     fs = project.get_feature_store()
     fg = fs.get_feature_group(name=FEATURE_GROUP_NAME, version=FEATURE_GROUP_VERSION)
 
-    df = pd.DataFrame([features])
-    # Force float dtype on numeric columns — a value that happens to be a
-    # whole number (e.g. OpenWeather returning "no": 0) gets inferred as
-    # int by pandas for a single-row frame, which the feature group schema
-    # (all floats, from the historical backfill) then rejects.
+    df = pd.DataFrame(rows)
     for col in NUMERIC_FLOAT_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype(float)
 
     fg.insert(df)
-    print(f"Inserted 1 row into '{FEATURE_GROUP_NAME}' (timestamp={features['timestamp']})")
+    print(f"Upserted {len(df)} rows into '{FEATURE_GROUP_NAME}' "
+          f"(covers {df['datetime_utc'].min()} -> {df['datetime_utc'].max()})")
 
 
 if __name__ == "__main__":
@@ -118,15 +110,22 @@ if __name__ == "__main__":
     if not openweather_key:
         raise EnvironmentError("OPENWEATHER_API_KEY not set")
     if not hopsworks_key:
-        raise EnvironmentError("HOPSWORKS_API_KEY not set — required to write to the feature store")
+        raise EnvironmentError("HOPSWORKS_API_KEY not set")
 
-    print("Fetching current air pollution data for Lahore...")
-    raw = fetch_current_raw(LAT, LON, openweather_key)
-    features = compute_features(raw)
+    print(f"Fetching last {LOOKBACK_HOURS}h of air pollution data for Lahore...")
+    raw_records = fetch_recent_raw(LAT, LON, openweather_key, LOOKBACK_HOURS)
+    print(f"Got {len(raw_records)} raw records")
 
-    print("Computed feature record:")
-    for k, v in features.items():
-        print(f"  {k:15s}: {v}")
+    rows = []
+    for raw in raw_records:
+        try:
+            rows.append(compute_features(raw))
+        except ValueError as e:
+            print(f"Skipping bad record: {e}")
+            continue
 
-    print("\nWriting to Hopsworks feature store...")
-    write_to_hopsworks(features, hopsworks_key)
+    if not rows:
+        raise RuntimeError("No valid rows computed — nothing to write")
+
+    print("Writing batch to Hopsworks feature store...")
+    write_batch_to_hopsworks(rows, hopsworks_key)
