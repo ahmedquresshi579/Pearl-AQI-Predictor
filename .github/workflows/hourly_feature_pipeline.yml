@@ -2,7 +2,7 @@ name: Hourly Feature Pipeline
 
 on:
   schedule:
-    - cron: '0 * * * *'  # every hour, on the hour (UTC)
+    - cron: '17 * * * *'  # every hour, on the minute 17 (UTC)
   workflow_dispatch:  # lets you trigger it manually from the Actions tab too
 
 jobs:
