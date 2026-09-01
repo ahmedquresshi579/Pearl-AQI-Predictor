@@ -32,10 +32,12 @@ from aqi_style import CUSTOM_CSS, get_category, EPA_CATEGORIES
 
 load_dotenv()
 
+
 def _html(s: str) -> str:
     """Strip leading whitespace from every line so Streamlit's markdown
     renderer doesn't mistake indented HTML for a code block."""
     return "\n".join(line.strip() for line in s.strip().split("\n"))
+
 
 FEATURE_GROUP_NAME = "lahore_aqi_features"
 FEATURE_GROUP_VERSION = 1
@@ -141,25 +143,64 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # Two readings can floor into the same hour (e.g. a manual trigger
     # plus the scheduled one) — keep the freshest per hour.
     df = df.assign(_hour=hour_bucket)
-    df = df.sort_values("timestamp").drop_duplicates(subset="_hour", keep="last")
+    df = df.sort_values("timestamp").drop_duplicates(
+        subset="_hour",
+        keep="last"
+    )
+
     dt_index = df["_hour"]
 
-    aqi_series = pd.Series(df["aqi"].values, index=dt_index)
-    full_range = pd.date_range(dt_index.min(), dt_index.max(), freq="h")
+    aqi_series = pd.Series(
+        df["aqi"].values,
+        index=dt_index
+    )
+
+    full_range = pd.date_range(
+        dt_index.min(),
+        dt_index.max(),
+        freq="h"
+    )
+
     aqi_continuous = aqi_series.reindex(full_range)
 
     feature_frame = pd.DataFrame(index=full_range)
+
     for lag_h in LAG_HOURS:
-        feature_frame[f"aqi_lag_{lag_h}"] = aqi_continuous.shift(lag_h)
+        feature_frame[f"aqi_lag_{lag_h}"] = (
+            aqi_continuous.shift(lag_h)
+        )
 
     shifted = aqi_continuous.shift(1)
+
     for window in ROLLING_WINDOWS:
         min_periods = max(1, window // 2)
-        feature_frame[f"aqi_rmean_{window}"] = shifted.rolling(window, min_periods=min_periods).mean()
-        feature_frame[f"aqi_rstd_{window}"] = shifted.rolling(window, min_periods=min_periods).std()
 
-    df = df.set_index(dt_index).join(feature_frame, how="left").reset_index(drop=True)
-    df = df.drop(columns="_hour", errors="ignore")
+        feature_frame[f"aqi_rmean_{window}"] = (
+            shifted.rolling(
+                window,
+                min_periods=min_periods
+            ).mean()
+        )
+
+        feature_frame[f"aqi_rstd_{window}"] = (
+            shifted.rolling(
+                window,
+                min_periods=min_periods
+            ).std()
+        )
+
+    df = (
+        df
+        .set_index(dt_index)
+        .join(feature_frame, how="left")
+        .reset_index(drop=True)
+    )
+
+    df = df.drop(
+        columns="_hour",
+        errors="ignore"
+    )
+
     return df
 
 
@@ -185,7 +226,8 @@ def forecast_latest(
     feature_cols = get_feature_columns()
 
     latest = (
-        df.dropna(subset=feature_cols)
+        df
+        .dropna(subset=feature_cols)
         .iloc[[-1]]
     )
 
@@ -613,7 +655,6 @@ def main():
     )
 
     # -----------------------------------------------------------------------
-    # -----------------------------------------------------------------------
     # Dashboard hero
     # -----------------------------------------------------------------------
 
@@ -688,27 +729,52 @@ def main():
     )
 
     # -----------------------------------------------------------------------
-    # -----------------------------------------------------------------------
     # Current conditions + forecasts
     # -----------------------------------------------------------------------
 
     current_label, current_color = get_category(current_aqi)
 
     forecast_items = [
-        ("Current AQI", "NOW", current_aqi, current_label, current_color, 0),
+        (
+            "Current AQI",
+            "NOW",
+            current_aqi,
+            current_label,
+            current_color,
+            0
+        ),
     ]
 
     for key, hlabel in HORIZON_LABELS.items():
         val = forecasts[key]
         flabel, fcolor = get_category(val)
-        forecast_items.append((hlabel, "OUTLOOK", val, flabel, fcolor, val - current_aqi))
+
+        forecast_items.append(
+            (
+                hlabel,
+                "OUTLOOK",
+                val,
+                flabel,
+                fcolor,
+                val - current_aqi
+            )
+        )
 
     cards_html = '<div class="forecast-grid">'
 
-    for idx, (title, time_label, value, status, tile_color, delta) in enumerate(forecast_items):
+    for idx, (
+        title,
+        time_label,
+        value,
+        status,
+        tile_color,
+        delta
+    ) in enumerate(forecast_items):
+
         if idx == 0:
             delta_text = "Latest observation"
             tile_class = "forecast-tile current"
+
         else:
             sign = "+" if delta >= 0 else ""
             delta_text = f"{sign}{delta:.0f} vs now"
@@ -720,9 +786,11 @@ def main():
                 <span class="forecast-label">{title}</span>
                 <span class="forecast-time">{time_label}</span>
             </div>
+
             <div class="forecast-number">
                 {value:.0f}<small>AQI</small>
             </div>
+
             <div class="forecast-foot">
                 <span class="forecast-status">{status}</span>
                 <span class="forecast-delta">{delta_text}</span>
@@ -745,6 +813,11 @@ def main():
             f'</div>'
         ),
         unsafe_allow_html=True,
+    )
+
+    # ADDED: UTC / PKT clarification
+    st.caption(
+        "All times shown are UTC. Lahore local time (PKT) = UTC + 5 hours."
     )
 
     # -----------------------------------------------------------------------
@@ -773,48 +846,92 @@ def main():
 
     # -----------------------------------------------------------------------
     # AQI outlook
+    # -----------------------------------------------------------------------
+
     st.markdown(
         '<p class="modern-section">AQI Outlook</p>',
         unsafe_allow_html=True
     )
 
-    outlook_labels = ["Now", "24h", "48h", "72h"]
-    outlook_values = [current_aqi] + [forecasts[k] for k in HORIZON_LABELS]
-    outlook_colors = [get_category(v)[1] for v in outlook_values]
+    outlook_labels = [
+        "Now",
+        "24h",
+        "48h",
+        "72h"
+    ]
+
+    outlook_values = (
+        [current_aqi]
+        + [
+            forecasts[k]
+            for k in HORIZON_LABELS
+        ]
+    )
+
+    outlook_colors = [
+        get_category(v)[1]
+        for v in outlook_values
+    ]
 
     outlook_fig = go.Figure(
         go.Bar(
             x=outlook_values,
             y=outlook_labels,
             orientation="h",
-            marker=dict(color=outlook_colors),
-            text=[f"{v:.0f}" for v in outlook_values],
+            marker=dict(
+                color=outlook_colors
+            ),
+            text=[
+                f"{v:.0f}"
+                for v in outlook_values
+            ],
             textposition="outside",
-            hovertemplate="%{y}: %{x:.0f} AQI<extra></extra>",
+            hovertemplate=(
+                "%{y}: %{x:.0f} AQI"
+                "<extra></extra>"
+            ),
         )
     )
 
     outlook_fig.update_layout(
         template="plotly_dark",
         height=225,
-        margin=dict(l=10, r=55, t=8, b=10),
+        margin=dict(
+            l=10,
+            r=55,
+            t=8,
+            b=10
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#B7CDD1"),
+        font=dict(
+            color="#B7CDD1"
+        ),
         xaxis=dict(
             title=None,
-            range=[0, max(170, max(outlook_values) * 1.18)],
+            range=[
+                0,
+                max(
+                    170,
+                    max(outlook_values) * 1.18
+                )
+            ],
             gridcolor="rgba(130,160,170,.10)",
             zeroline=False,
         ),
-        yaxis=dict(title=None, autorange="reversed"),
+        yaxis=dict(
+            title=None,
+            autorange="reversed"
+        ),
         showlegend=False,
     )
 
     st.plotly_chart(
         outlook_fig,
         use_container_width=True,
-        config={"displayModeBar": False},
+        config={
+            "displayModeBar": False
+        },
     )
 
     # -----------------------------------------------------------------------
@@ -887,7 +1004,8 @@ def main():
     )
 
     trend_df = (
-        df.dropna(subset=["aqi"])
+        df
+        .dropna(subset=["aqi"])
         .copy()
     )
 
@@ -1147,6 +1265,55 @@ def main():
         st.plotly_chart(
             fig_shap,
             use_container_width=True
+        )
+
+        # -------------------------------------------------------------------
+        # ADDED: SHAP beeswarm showing direction of impact
+        # -------------------------------------------------------------------
+
+        st.markdown(
+            "**Direction of impact (SHAP beeswarm)**"
+        )
+
+        import matplotlib.pyplot as plt
+
+        fig_beeswarm, ax = plt.subplots(
+            figsize=(9, 5)
+        )
+
+        shap.plots.beeswarm(
+            shap_values,
+            show=False,
+            max_display=15
+        )
+
+        plt.gcf().set_facecolor(
+            "#0B1721"
+        )
+
+        ax.set_facecolor(
+            "#0B1721"
+        )
+
+        ax.tick_params(
+            colors="#B7CDD1"
+        )
+
+        for text in (
+            ax.get_yticklabels()
+            + ax.get_xticklabels()
+        ):
+            text.set_color(
+                "#B7CDD1"
+            )
+
+        st.pyplot(
+            fig_beeswarm,
+            use_container_width=True
+        )
+
+        plt.close(
+            fig_beeswarm
         )
 
         st.caption(
