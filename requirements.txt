@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+plotly
+scikit-learn
+shap
+hopsworks
+joblib
+matplotlib
+requests
+python-dotenv
