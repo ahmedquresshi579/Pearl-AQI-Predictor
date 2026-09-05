@@ -32,6 +32,22 @@ from aqi_style import CUSTOM_CSS, get_category, EPA_CATEGORIES
 
 load_dotenv()
 
+def retry_call(fn, *args, retries=3, delay=3, **kwargs):
+    """Retries a function call on failure, with a short delay between
+    attempts — absorbs transient Hopsworks Feature Query Service blips
+    (a documented free-tier limitation) instead of crashing the whole
+    app on the first hiccup."""
+    import time
+    last_exception = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            if attempt < retries:
+                time.sleep(delay)
+    raise last_exception
+
 
 def _html(s: str) -> str:
     """Strip leading whitespace from every line so Streamlit's markdown
@@ -685,19 +701,26 @@ def main():
     # Load Hopsworks + data + model
     # -----------------------------------------------------------------------
 
-    with st.spinner(
-        "Connecting to Hopsworks..."
-    ):
+    try:
+        with st.spinner(
+            "Connecting to Hopsworks..."
+        ):
 
-        project = get_hopsworks_project()
+            project = retry_call(get_hopsworks_project, retries=3, delay=4)
 
-        raw_df = load_recent_data(
-            project
+            raw_df = retry_call(load_recent_data, project, retries=3, delay=4)
+
+            model, model_version, model_metrics = retry_call(
+                load_model, project, retries=3, delay=4
+            )
+    except Exception as e:
+        st.error(
+            "⚠️ The forecasting service is temporarily unavailable "
+            "(Hopsworks free-tier outage). This usually resolves within a "
+            "minute or two — please refresh the page shortly."
         )
-
-        model, model_version, model_metrics = load_model(
-            project
-        )
+        st.caption(f"Technical detail: {e}")
+        st.stop()
 
     # -----------------------------------------------------------------------
     # Build features
